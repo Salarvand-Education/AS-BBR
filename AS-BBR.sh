@@ -9,13 +9,14 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Ensure the script is run as root
-if [ "$EUID" -ne 0 ]; then
+if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}Please run this script as root.${NC}"
     exit 1
 fi
 
 # Function to display the logo and system information
 function show_header() {
+    clear
     echo -e "\n${BLUE}==========================================${NC}"
     echo -e "${CYAN}   Network Optimizer Script V1.0${NC}"
     echo -e "${BLUE}==========================================${NC}"
@@ -28,35 +29,52 @@ function show_header() {
 # Function to install required dependencies
 function install_dependencies() {
     echo -e "${YELLOW}Checking and installing required dependencies...${NC}"
-    sudo apt-get -o Acquire::ForceIPv4=true update > /dev/null 2>&1
-    if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
-        echo -e "${YELLOW}Installing sudo, curl, and jq...${NC}"
-        sudo apt-get -o Acquire::ForceIPv4=true install -y sudo curl jq > /dev/null 2>&1
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}Dependencies installed successfully.${NC}"
-        else
+    if ! apt-get -o Acquire::ForceIPv4=true update &> /dev/null; then
+        echo -e "${RED}Failed to update package lists. Check your internet connection.${NC}"
+        exit 1
+    fi
+    
+    local missing_deps=()
+    for dep in curl jq sudo; do
+        if ! command -v "$dep" &> /dev/null; then
+            missing_deps+=("$dep")
+        fi
+    done
+    
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Installing: ${missing_deps[*]}${NC}"
+        if ! apt-get -o Acquire::ForceIPv4=true install -y "${missing_deps[@]}" &> /dev/null; then
             echo -e "${RED}Failed to install dependencies. Please check your internet connection.${NC}"
             exit 1
         fi
+        echo -e "${GREEN}Dependencies installed successfully.${NC}"
     else
-        echo -e "${GREEN}Dependencies are already installed.${NC}"
+        echo -e "${GREEN}All dependencies are already installed.${NC}"
     fi
 }
 
 # Fix /etc/hosts file
 function fix_etc_hosts() { 
-    local host_path=${1:-/etc/hosts}
+    local host_path="${1:-/etc/hosts}"
     echo -e "${YELLOW}Starting to fix the hosts file...${NC}"
-    # Backup current hosts file
-    if cp "$host_path" "${host_path}.bak"; then
-        echo -e "${YELLOW}Hosts file backed up as ${host_path}.bak${NC}"
-    else
-        echo -e "${RED}Backup failed. Cannot proceed.${NC}"
+    
+    # Check if file exists and is writable
+    if [[ ! -w "$host_path" ]]; then
+        echo -e "${RED}Cannot write to $host_path. Check permissions.${NC}"
+        return 1
+    }
+    
+    # Create backup with timestamp
+    local backup_path="${host_path}.bak.$(date +%Y%m%d_%H%M%S)"
+    if ! cp -f "$host_path" "$backup_path"; then
+        echo -e "${RED}Failed to create backup at $backup_path${NC}"
         return 1
     fi
-    # Check if hostname is in hosts file; add if missing
+    echo -e "${YELLOW}Hosts file backed up as $backup_path${NC}"
+    
+    local hostname_entry="127.0.1.1 $(hostname)"
     if ! grep -q "$(hostname)" "$host_path"; then
-        if echo "127.0.1.1 $(hostname)" | sudo tee -a "$host_path" > /dev/null; then
+        if echo "$hostname_entry" | sudo tee -a "$host_path" > /dev/null; then
             echo -e "${GREEN}Hostname entry added to hosts file.${NC}"
         else
             echo -e "${RED}Failed to add hostname entry.${NC}"
@@ -67,202 +85,147 @@ function fix_etc_hosts() {
     fi
 }
 
-# Temporarily fix DNS by modifying /etc/resolv.conf
+# Fix DNS with proper error handling
 function fix_dns() {
-    local dns_path=${1:-/etc/resolv.conf}
+    local dns_path="${1:-/etc/resolv.conf}"
     echo -e "${YELLOW}Starting to update DNS configuration...${NC}"
-    # Backup current DNS settings
-    if cp "$dns_path" "${dns_path}.bak"; then
-        echo -e "${YELLOW}DNS configuration backed up as ${dns_path}.bak${NC}"
-    else
-        echo -e "${RED}Backup failed. Cannot proceed.${NC}"
+    
+    # Check if file exists and is writable
+    if [[ ! -w "$dns_path" ]]; then
+        echo -e "${RED}Cannot write to $dns_path. Check permissions.${NC}"
         return 1
-    fi
-    # Clear current nameservers and add temporary ones
-    if sed -i '/nameserver/d' "$dns_path" && {
-        echo "nameserver 8.8.8.8" | sudo tee -a "$dns_path" > /dev/null
-        echo "nameserver 8.8.4.4" | sudo tee -a "$dns_path" > /dev/null
-    }; then
-        echo -e "${GREEN}Temporary DNS servers set successfully.${NC}"
-    else
-        echo -e "${RED}Failed to update DNS configuration.${NC}"
-        return 1
-    fi
-}
-
-# Function to fully update and upgrade the server
-function full_update_upgrade() {
-    echo -e "\n${YELLOW}Updating package list...${NC}"
-    sudo apt-get -o Acquire::ForceIPv4=true update > /dev/null 2>&1
-    echo -e "\n${YELLOW}Upgrading installed packages...${NC}"
-    sudo apt-get -o Acquire::ForceIPv4=true upgrade -y > /dev/null 2>&1
-    echo -e "\n${YELLOW}Performing full distribution upgrade...${NC}"
-    sudo apt-get -o Acquire::ForceIPv4=true dist-upgrade -y > /dev/null 2>&1
-    echo -e "\n${YELLOW}Removing unnecessary packages...${NC}"
-    sudo apt-get -o Acquire::ForceIPv4=true autoremove -y > /dev/null 2>&1
-    echo -e "\n${YELLOW}Cleaning up any cached packages...${NC}"
-    sudo apt-get -o Acquire::ForceIPv4=true autoclean > /dev/null 2>&1
-    echo -e "\n${GREEN}Server update and upgrade complete.${NC}\n"
-}
-
-# Function to gather system information
-function gather_system_info() {
-    CPU_CORES=$(nproc)
-    TOTAL_RAM=$(free -m | awk '/Mem:/ { print $2 }')
-    echo -e "\n${GREEN}Detected CPU cores: $CPU_CORES${NC}"
-    echo -e "${GREEN}Detected Total RAM: ${TOTAL_RAM}MB${NC}\n"
-}
-
-# Function to intelligently set buffer sizes and sysctl settings
-function intelligent_settings() {
-    echo -e "\n${YELLOW}Starting intelligent network optimizations...${NC}\n"
-    echo -e "\n${YELLOW}Fixing /etc/hosts file...${NC}\n"
-    fix_etc_hosts
-    sleep 2
-    echo -e "\n${YELLOW}Waiting for DNS to propagate...${NC}\n"
-    fix_dns
-    sleep 2
-    echo -e "\n${YELLOW}Performing full system update and upgrade...${NC}\n"
-    full_update_upgrade
-    sleep 2
-    echo -e "\n${YELLOW}Gathering system information...${NC}\n"
-    gather_system_info
-    sleep 2
-    echo -e "\n$(date): Starting sysctl configuration..."
-    sleep 2
-    echo -e "\n${YELLOW}Backing up current sysctl.conf...${NC}\n"
-    if [ -f /etc/sysctl.conf.bak ]; then
-        echo -e "\n${YELLOW}Backup already exists. Skipping backup...${NC}\n"
-    else
-        cp /etc/sysctl.conf /etc/sysctl.conf.bak
-    fi
-    # Intelligent buffer and backlog settings based on CPU and RAM
-    if [ "$TOTAL_RAM" -lt 2000 ] && [ "$CPU_CORES" -le 2 ]; then
-        rmem_max=16777216
-        wmem_max=16777216
-        netdev_max_backlog=250000
-        queuing_disc="fq_codel"
-    elif [ "$TOTAL_RAM" -lt 4000 ] && [ "$CPU_CORES" -le 4 ]; then
-        rmem_max=33554432
-        wmem_max=33554432
-        netdev_max_backlog=500000
-        queuing_disc="cake"
-    else
-        rmem_max=67108864
-        wmem_max=67108864
-        netdev_max_backlog=1000000
-        queuing_disc="cake"
-    fi
-    echo "$(date): Set rmem_max=$rmem_max, wmem_max=$wmem_max, netdev_max_backlog=$netdev_max_backlog based on system resources. Queuing discipline: $queuing_disc"
-    # Adjust TCP settings 
-    tcp_rmem="4096 87380 16777216"
-    tcp_wmem="4096 65536 16777216"
-    echo "$(date): Set tcp_rmem=$tcp_rmem, tcp_wmem=$tcp_wmem."
-    # Apply the settings to sysctl.conf
-    {
-    cat <<EOF >> /etc/sysctl.conf
-# Network optimizations applied on $(date)
-net.core.rmem_max = $rmem_max
-net.core.wmem_max = $wmem_max
-net.core.netdev_max_backlog = $netdev_max_backlog
-net.ipv4.tcp_rmem = $tcp_rmem
-net.ipv4.tcp_wmem = $tcp_wmem
-net.core.default_qdisc = $queuing_disc
-EOF
     }
-    echo "$(date): Network optimizations added to sysctl.conf."
-    sysctl -p > /dev/null 2>&1 && echo -e "\n${GREEN}Network settings applied successfully!${NC}\n"
-    # Log the final values of interest
-    echo -e "\n${YELLOW}Logging dynamic values...${NC}\n\n"
-    echo "$(date): Final settings applied."
-    echo "Total RAM: $TOTAL_RAM MB, CPU Cores: $CPU_CORES"
-    echo "rmem_max: $rmem_max, wmem_max: $wmem_max, netdev_max_backlog: $netdev_max_backlog"
-    echo "tcp_rmem: $tcp_rmem, tcp_wmem: $tcp_wmem, Queuing discipline: $queuing_disc"
-    echo ""
-    echo ""
-    prompt_reboot
+    
+    # Create backup with timestamp
+    local backup_path="${dns_path}.bak.$(date +%Y%m%d_%H%M%S)"
+    if ! cp -f "$dns_path" "$backup_path"; then
+        echo -e "${RED}Failed to create backup at $backup_path${NC}"
+        return 1
+    fi
+    echo -e "${YELLOW}DNS configuration backed up as $backup_path${NC}"
+    
+    # Update nameservers with error handling
+    {
+        echo "# Generated by network-optimizer script on $(date)"
+        echo "nameserver 8.8.8.8"
+        echo "nameserver 8.8.4.4"
+    } | sudo tee "$dns_path" > /dev/null || {
+        echo -e "${RED}Failed to update DNS configuration.${NC}"
+        cp -f "$backup_path" "$dns_path"
+        return 1
+    }
+    
+    echo -e "${GREEN}DNS servers updated successfully.${NC}"
+    return 0
 }
 
-# Function to restore the original sysctl settings
-function restore_original() {
-    if [ -f /etc/sysctl.conf.bak ]; then
-        echo -e "\n${YELLOW}Restoring original network settings from backup...${NC}\n"
-        cp /etc/sysctl.conf.bak /etc/sysctl.conf
-        rm /etc/sysctl.conf.bak
-        sysctl -p > /dev/null 2>&1 && echo -e "\n${GREEN}Network settings restored successfully!${NC}\n"
-        prompt_reboot
-    else
-        echo -e "\n${RED}No backup found. Please manually restore sysctl.conf.${NC}\n"
-        # Prompt user to press any key to continue
-        read -n 1 -s -r -p "Press any key to continue..."
-        echo # for a new line
+# Function to fully update and upgrade the server with proper error handling
+function full_update_upgrade() {
+    local error_occurred=false
+    
+    echo -e "\n${YELLOW}Starting system update process...${NC}"
+    
+    # Update package lists
+    echo -e "${YELLOW}Updating package lists...${NC}"
+    if ! apt-get -o Acquire::ForceIPv4=true update &> /dev/null; then
+        echo -e "${RED}Failed to update package lists.${NC}"
+        error_occurred=true
     fi
-}
-
-# Function to find the best MTU
-find_best_mtu() {
-    local server_ip=8.8.8.8  # Google DNS server
-    local start_mtu=1500  # Standard MTU size for Ethernet
-    local min_mtu=1200    # Lower bound to prevent very small MTUs
-    echo -e "${CYAN}Finding optimal MTU for server $server_ip...${NC}"
-    # Test if the server is reachable
-    if ! ping -c 1 -W 1 "$server_ip" &>/dev/null; then
-        echo -e "${RED}Server $server_ip is unreachable. Check the IP address or network connection.${NC}"
-        return 
-    fi
-    # Find the maximum MTU without fragmentation
-    local mtu=$start_mtu
-    while [ $mtu -ge $min_mtu ]; do
-        if ping -M do -s $((mtu - 28)) -c 1 "$server_ip" &>/dev/null; then
-            echo -e "${GREEN}Optimal MTU found: $mtu bytes${NC}"
-            read -n 1 -s -r -p "Press any key to continue..."
-            echo # for a new line
-            return 
+    
+    # Only proceed with upgrades if update was successful
+    if [[ "$error_occurred" == false ]]; then
+        echo -e "${YELLOW}Upgrading installed packages...${NC}"
+        if ! apt-get -o Acquire::ForceIPv4=true upgrade -y &> /dev/null; then
+            echo -e "${RED}Failed to upgrade packages.${NC}"
+            error_occurred=true
         fi
-        ((mtu--))
-    done
-    echo -e "${RED}No suitable MTU found. Try adjusting the minimum MTU limit.${NC}"
-    read -n 1 -s -r -p "Press any key to continue..."
-    echo # for a new line
-    return 
-}
-
-# Function to prompt the user for a reboot
-function prompt_reboot() {
-    read -p "It is recommended to reboot for changes to take effect. Reboot now? (y/[default=n]): " reboot_choice
-    if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
-        echo -e "\n${YELLOW}Rebooting now...${NC}\n"
-        reboot
-    else
-        echo -e "\n${YELLOW}Reboot skipped. Please remember to reboot manually for all changes to take effect.${NC}\n"
+        
+        echo -e "${YELLOW}Performing distribution upgrade...${NC}"
+        if ! apt-get -o Acquire::ForceIPv4=true dist-upgrade -y &> /dev/null; then
+            echo -e "${RED}Failed to perform distribution upgrade.${NC}"
+            error_occurred=true
+        fi
+        
+        echo -e "${YELLOW}Cleaning up...${NC}"
+        apt-get -o Acquire::ForceIPv4=true autoremove -y &> /dev/null
+        apt-get -o Acquire::ForceIPv4=true autoclean &> /dev/null
     fi
-    # Prompt user to press any key to continue
-    read -n 1 -s -r -p "Press any key to continue..."
-    echo # for a new line
+    
+    if [[ "$error_occurred" == true ]]; then
+        echo -e "${RED}Some updates failed. Please check the system logs for details.${NC}"
+        return 1
+    else
+        echo -e "${GREEN}System update and upgrade completed successfully.${NC}"
+        return 0
+    fi
 }
 
-# Function to display the menu
+# Function to gather system information with validation
+function gather_system_info() {
+    local cpu_cores=$(nproc)
+    local total_ram=$(free -m | awk '/Mem:/ { print $2 }')
+    
+    # Validate gathered information
+    if [[ ! "$cpu_cores" =~ ^[0-9]+$ ]] || [[ "$cpu_cores" -eq 0 ]]; then
+        echo -e "${RED}Failed to detect CPU cores correctly.${NC}"
+        cpu_cores=1  # Fallback to conservative value
+    fi
+    
+    if [[ ! "$total_ram" =~ ^[0-9]+$ ]] || [[ "$total_ram" -eq 0 ]]; then
+        echo -e "${RED}Failed to detect RAM correctly.${NC}"
+        total_ram=1024  # Fallback to conservative value
+    fi
+    
+    echo -e "\n${GREEN}System Information:${NC}"
+    echo -e "${GREEN}CPU cores: $cpu_cores${NC}"
+    echo -e "${GREEN}Total RAM: ${total_ram}MB${NC}\n"
+    
+    # Export variables for use in other functions
+    export SYSTEM_CPU_CORES=$cpu_cores
+    export SYSTEM_TOTAL_RAM=$total_ram
+}
+
+# Main menu function with improved error handling
 function show_menu() {
     while true; do
-        clear
         show_header
-        echo -e "${CYAN}Menu:${NC}"
+        echo -e "${CYAN}Available Options:${NC}"
         echo -e "${GREEN}1. Apply Intelligent Optimizations${NC}"
         echo -e "${GREEN}2. Find Best MTU for Server${NC}"
         echo -e "${GREEN}3. Restore Original Settings${NC}"
         echo -e "${GREEN}0. Exit${NC}"
         echo
-        read -p "Enter your choice: " choice
+        read -rp "Enter your choice (0-3): " choice
+        
         case $choice in
             1) intelligent_settings ;;
             2) find_best_mtu ;;
             3) restore_original ;;
-            0) echo -e "\n${YELLOW}Exiting...${NC}" ; exit 0 ;;
-            *) echo -e "\n${RED}Invalid option. Please try again.${NC}\n" ; sleep 2 ;;
+            0) 
+                echo -e "\n${YELLOW}Exiting...${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "\n${RED}Invalid option. Please enter a number between 0 and 3.${NC}"
+                sleep 2
+                ;;
         esac
     done
 }
 
-# Main execution flow
-install_dependencies
+# Improved error handling for the main execution
+trap 'echo -e "\n${RED}Script interrupted. Cleaning up...${NC}"; exit 1' INT TERM
+
+# Check for root privileges
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}This script must be run as root. Please use sudo.${NC}"
+    exit 1
+fi
+
+# Main execution with error handling
+if ! install_dependencies; then
+    echo -e "${RED}Failed to install required dependencies. Exiting.${NC}"
+    exit 1
+fi
+
 show_menu
