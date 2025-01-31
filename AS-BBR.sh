@@ -25,6 +25,7 @@ function show_header() {
     echo -e "${GREEN}Uptime: $(uptime -p)${NC}"
     echo -e "${BLUE}==========================================${NC}\n"
 }
+
 # Function to install required dependencies
 function install_dependencies() {
     echo -e "${YELLOW}Checking and installing required dependencies...${NC}"
@@ -160,7 +161,16 @@ function intelligent_settings() {
     echo "$(date): Set tcp_rmem=$tcp_rmem, tcp_wmem=$tcp_wmem."
     # Apply the settings to sysctl.conf
     {
-    cat <> /etc/sysctl.conf
+    cat <<EOF >> /etc/sysctl.conf
+# Network optimizations applied on $(date)
+net.core.rmem_max = $rmem_max
+net.core.wmem_max = $wmem_max
+net.core.netdev_max_backlog = $netdev_max_backlog
+net.ipv4.tcp_rmem = $tcp_rmem
+net.ipv4.tcp_wmem = $tcp_wmem
+net.core.default_qdisc = $queuing_disc
+EOF
+    }
     echo "$(date): Network optimizations added to sysctl.conf."
     sysctl -p > /dev/null 2>&1 && echo -e "\n${GREEN}Network settings applied successfully!${NC}\n"
     # Log the final values of interest
@@ -245,12 +255,12 @@ function show_menu() {
         echo
         read -p "Enter your choice: " choice
         case $choice in
-    1) intelligent_settings ;;
-    2) find_best_mtu ;;
-    3) restore_original ;;
-    0) echo -e "\n${YELLOW}Exiting...${NC}" ; exit 0 ;;
-    *) echo -e "\n${RED}Invalid option. Please try again.${NC}\n" ; sleep 2 ;;
-esac
+            1) intelligent_settings ;;
+            2) find_best_mtu ;;
+            3) restore_original ;;
+            0) echo -e "\n${YELLOW}Exiting...${NC}" ; exit 0 ;;
+            *) echo -e "\n${RED}Invalid option. Please try again.${NC}\n" ; sleep 2 ;;
+        esac
     done
 }
 
