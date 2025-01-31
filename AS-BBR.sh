@@ -8,15 +8,40 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# Log file path
+LOG_FILE="/var/log/network_optimizer.log"
+
 # Ensure the script is run as root
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}Please run this script as root.${NC}"
     exit 1
 fi
 
+# Function to log messages
+function log_message() {
+    local level=$1
+    local message=$2
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    case $level in
+        INFO)
+            echo -e "[${timestamp}] [INFO] ${message}" | tee -a "$LOG_FILE"
+            ;;
+        WARN)
+            echo -e "[${timestamp}] [WARN] ${YELLOW}${message}${NC}" | tee -a "$LOG_FILE"
+            ;;
+        ERROR)
+            echo -e "[${timestamp}] [ERROR] ${RED}${message}${NC}" | tee -a "$LOG_FILE"
+            ;;
+        SUCCESS)
+            echo -e "[${timestamp}] [SUCCESS] ${GREEN}${message}${NC}" | tee -a "$LOG_FILE"
+            ;;
+    esac
+}
+
 # Function to display the logo and system information
 function show_header() {
     clear
+    log_message INFO "Displaying header information."
     echo -e "\n${BLUE}==========================================${NC}"
     echo -e "${CYAN}   Network Optimizer Script V1.0${NC}"
     echo -e "${BLUE}==========================================${NC}"
@@ -28,89 +53,80 @@ function show_header() {
 
 # Function to install required dependencies
 function install_dependencies() {
-    echo -e "${YELLOW}Checking and installing required dependencies...${NC}"
+    log_message INFO "Checking and installing required dependencies..."
     if ! apt-get update &> /dev/null; then
-        echo -e "${RED}Failed to update package lists. Check your internet connection.${NC}"
+        log_message ERROR "Failed to update package lists. Check your internet connection."
         exit 1
     fi
-    
     local missing_deps=()
     for dep in curl jq sudo ethtool net-tools; do
         if ! command -v "$dep" &> /dev/null; then
             missing_deps+=("$dep")
         fi
     done
-    
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        echo -e "${YELLOW}Installing: ${missing_deps[*]}${NC}"
+        log_message WARN "Installing missing dependencies: ${missing_deps[*]}"
         if ! apt-get install -y "${missing_deps[@]}" &> /dev/null; then
-            echo -e "${RED}Failed to install dependencies. Check your internet connection.${NC}"
+            log_message ERROR "Failed to install dependencies. Check your internet connection."
             exit 1
         fi
-        echo -e "${GREEN}Dependencies installed successfully.${NC}"
+        log_message SUCCESS "Dependencies installed successfully."
     else
-        echo -e "${GREEN}All dependencies are already installed.${NC}"
+        log_message INFO "All dependencies are already installed."
     fi
 }
 
 # Function to fix /etc/hosts file
 function fix_etc_hosts() { 
     local host_path="${1:-/etc/hosts}"
-    echo -e "${YELLOW}Starting to fix the hosts file...${NC}"
-    
+    log_message INFO "Starting to fix the hosts file..."
     if [[ ! -w "$host_path" ]]; then
-        echo -e "${RED}Cannot write to $host_path. Check permissions.${NC}"
+        log_message ERROR "Cannot write to $host_path. Check permissions."
         return 1
     fi
-    
     local backup_path="${host_path}.bak.$(date +%Y%m%d_%H%M%S)"
     if ! cp -f "$host_path" "$backup_path"; then
-        echo -e "${RED}Failed to create backup at $backup_path${NC}"
+        log_message ERROR "Failed to create backup at $backup_path"
         return 1
     fi
-    echo -e "${YELLOW}Hosts file backed up as $backup_path${NC}"
-    
+    log_message INFO "Hosts file backed up as $backup_path"
     local hostname_entry="127.0.1.1 $(hostname)"
     if ! grep -q "$(hostname)" "$host_path"; then
         if echo "$hostname_entry" | tee -a "$host_path" > /dev/null; then
-            echo -e "${GREEN}Hostname entry added to hosts file.${NC}"
+            log_message SUCCESS "Hostname entry added to hosts file."
         else
-            echo -e "${RED}Failed to add hostname entry.${NC}"
+            log_message ERROR "Failed to add hostname entry."
             return 1
         fi
     else
-        echo -e "${GREEN}Hostname entry already present.${NC}"
+        log_message INFO "Hostname entry already present."
     fi
 }
 
 # Function to fix DNS configuration
 function fix_dns() {
     local dns_path="${1:-/etc/resolv.conf}"
-    echo -e "${YELLOW}Starting to update DNS configuration...${NC}"
-    
+    log_message INFO "Starting to update DNS configuration..."
     if [[ ! -w "$dns_path" ]]; then
-        echo -e "${RED}Cannot write to $dns_path. Check permissions.${NC}"
+        log_message ERROR "Cannot write to $dns_path. Check permissions."
         return 1
     fi
-    
     local backup_path="${dns_path}.bak.$(date +%Y%m%d_%H%M%S)"
     if ! cp -f "$dns_path" "$backup_path"; then
-        echo -e "${RED}Failed to create backup at $backup_path${NC}"
+        log_message ERROR "Failed to create backup at $backup_path"
         return 1
     fi
-    echo -e "${YELLOW}DNS configuration backed up as $backup_path${NC}"
-    
+    log_message INFO "DNS configuration backed up as $backup_path"
     # Update nameservers
     cat > "$dns_path" << EOF
 # Generated by network optimizer on $(date)
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 EOF
-    
     if [[ $? -eq 0 ]]; then
-        echo -e "${GREEN}DNS configuration updated successfully.${NC}"
+        log_message SUCCESS "DNS configuration updated successfully."
     else
-        echo -e "${RED}Failed to update DNS configuration.${NC}"
+        log_message ERROR "Failed to update DNS configuration."
         cp -f "$backup_path" "$dns_path"
         return 1
     fi
@@ -118,23 +134,20 @@ EOF
 
 # Function to gather system information
 function gather_system_info() {
+    log_message INFO "Gathering system information..."
     local cpu_cores=$(nproc)
     local total_ram=$(free -m | awk '/Mem:/ { print $2 }')
-    
     if [[ ! "$cpu_cores" =~ ^[0-9]+$ ]] || [[ "$cpu_cores" -eq 0 ]]; then
-        echo -e "${RED}Failed to detect CPU cores correctly.${NC}"
+        log_message WARN "Failed to detect CPU cores correctly. Using fallback value."
         cpu_cores=1
     fi
-    
     if [[ ! "$total_ram" =~ ^[0-9]+$ ]] || [[ "$total_ram" -eq 0 ]]; then
-        echo -e "${RED}Failed to detect RAM correctly.${NC}"
+        log_message WARN "Failed to detect RAM correctly. Using fallback value."
         total_ram=1024
     fi
-    
-    echo -e "\n${GREEN}System Information:${NC}"
-    echo -e "${GREEN}CPU cores: $cpu_cores${NC}"
-    echo -e "${GREEN}Total RAM: ${total_ram}MB${NC}\n"
-    
+    log_message INFO "System Information:"
+    log_message INFO "CPU cores: $cpu_cores"
+    log_message INFO "Total RAM: ${total_ram}MB"
     export SYSTEM_CPU_CORES=$cpu_cores
     export SYSTEM_TOTAL_RAM=$total_ram
 }
@@ -142,27 +155,20 @@ function gather_system_info() {
 # Function to optimize network settings
 function optimize_network() {
     local interface=$1
-    
     if [[ -z "$interface" ]]; then
-        echo -e "${RED}No interface specified.${NC}"
+        log_message ERROR "No interface specified."
         return 1
     fi
-    
-    echo -e "${YELLOW}Optimizing network interface $interface...${NC}"
-    
+    log_message INFO "Optimizing network interface $interface..."
     # Enable/disable various network optimizations
     ethtool -K "$interface" tso on gso on gro on 2>/dev/null
     ethtool -G "$interface" rx 4096 tx 4096 2>/dev/null
-    
     # Set up TCP optimizations
     local sysctl_conf="/etc/sysctl.conf"
     local backup_path="${sysctl_conf}.bak.$(date +%Y%m%d_%H%M%S)"
-    
     cp -f "$sysctl_conf" "$backup_path"
-    
     # Add or update network optimizations
     cat >> "$sysctl_conf" << EOF
-
 # Network optimizations added on $(date)
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
@@ -178,10 +184,8 @@ net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 10
 net.ipv4.tcp_slow_start_after_idle = 0
 EOF
-    
     sysctl -p &>/dev/null
-    
-    echo -e "${GREEN}Network optimizations applied successfully.${NC}"
+    log_message SUCCESS "Network optimizations applied successfully."
 }
 
 # Function to find best MTU
@@ -190,10 +194,8 @@ function find_best_mtu() {
     local target_ip="8.8.8.8"
     local current_mtu=$(ip link show "$interface" | grep -oP 'mtu \K\d+')
     local optimal_mtu=$current_mtu
-    
-    echo -e "${YELLOW}Finding optimal MTU for interface $interface...${NC}"
-    echo -e "${YELLOW}Current MTU: $current_mtu${NC}"
-    
+    log_message INFO "Finding optimal MTU for interface $interface..."
+    log_message INFO "Current MTU: $current_mtu"
     # Test different MTU sizes
     for ((size = current_mtu; size >= 1000; size-=10)); do
         if ping -M do -s $((size - 28)) -c 1 "$target_ip" &>/dev/null; then
@@ -201,82 +203,67 @@ function find_best_mtu() {
             break
         fi
     done
-    
-    echo -e "${GREEN}Optimal MTU found: $optimal_mtu${NC}"
-    
+    log_message SUCCESS "Optimal MTU found: $optimal_mtu"
     # Set the new MTU
     if ip link set "$interface" mtu "$optimal_mtu"; then
-        echo -e "${GREEN}MTU set to $optimal_mtu${NC}"
+        log_message SUCCESS "MTU set to $optimal_mtu"
     else
-        echo -e "${RED}Failed to set MTU${NC}"
+        log_message ERROR "Failed to set MTU"
         return 1
     fi
 }
 
 # Function to perform system update
 function system_update() {
-    echo -e "${YELLOW}Performing system update...${NC}"
-    
+    log_message INFO "Performing system update..."
     if ! apt-get update &>/dev/null; then
-        echo -e "${RED}Failed to update package lists.${NC}"
+        log_message ERROR "Failed to update package lists."
         return 1
     fi
-    
     if ! apt-get upgrade -y &>/dev/null; then
-        echo -e "${RED}Failed to upgrade packages.${NC}"
+        log_message ERROR "Failed to upgrade packages."
         return 1
     fi
-    
     if ! apt-get dist-upgrade -y &>/dev/null; then
-        echo -e "${RED}Failed to perform distribution upgrade.${NC}"
+        log_message ERROR "Failed to perform distribution upgrade."
         return 1
     fi
-    
     apt-get autoremove -y &>/dev/null
     apt-get autoclean &>/dev/null
-    
-    echo -e "${GREEN}System update completed successfully.${NC}"
+    log_message SUCCESS "System update completed successfully."
 }
 
 # Function to restore original settings
 function restore_original() {
-    echo -e "${YELLOW}Restoring original settings...${NC}"
-    
+    log_message INFO "Restoring original settings..."
     local sysctl_backup="/etc/sysctl.conf.bak"
     local hosts_backup="/etc/hosts.bak"
     local resolv_backup="/etc/resolv.conf.bak"
-    
     if [[ -f "$sysctl_backup" ]]; then
         cp -f "$sysctl_backup" "/etc/sysctl.conf"
         sysctl -p &>/dev/null
-        echo -e "${GREEN}Restored sysctl settings${NC}"
+        log_message SUCCESS "Restored sysctl settings"
     fi
-    
     if [[ -f "$hosts_backup" ]]; then
         cp -f "$hosts_backup" "/etc/hosts"
-        echo -e "${GREEN}Restored hosts file${NC}"
+        log_message SUCCESS "Restored hosts file"
     fi
-    
     if [[ -f "$resolv_backup" ]]; then
         cp -f "$resolv_backup" "/etc/resolv.conf"
-        echo -e "${GREEN}Restored DNS settings${NC}"
+        log_message SUCCESS "Restored DNS settings"
     fi
-    
-    echo -e "${GREEN}Original settings restored successfully.${NC}"
+    log_message SUCCESS "Original settings restored successfully."
 }
 
 # Function to apply intelligent settings
 function intelligent_settings() {
-    echo -e "${YELLOW}Applying intelligent network optimizations...${NC}"
-    
+    log_message INFO "Applying intelligent network optimizations..."
     # Get primary network interface
     local interface=$(ip route | grep default | awk '{print $5}' | head -n1)
-    
     if [[ -z "$interface" ]]; then
-        echo -e "${RED}Could not detect primary network interface.${NC}"
+        log_message ERROR "Could not detect primary network interface."
         return 1
     fi
-    
     # Apply optimizations in sequence
     fix_etc_hosts || return 1
     fix_dns || return 1
@@ -284,10 +271,8 @@ function intelligent_settings() {
     gather_system_info || return 1
     optimize_network "$interface" || return 1
     find_best_mtu "$interface" || return 1
-    
-    echo -e "${GREEN}All optimizations completed successfully.${NC}"
-    echo -e "${YELLOW}A system reboot is recommended for changes to take effect.${NC}"
-    
+    log_message SUCCESS "All optimizations completed successfully."
+    log_message INFO "A system reboot is recommended for changes to take effect."
     read -rp "Would you like to reboot now? (y/N): " choice
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         reboot
@@ -298,6 +283,7 @@ function intelligent_settings() {
 function show_menu() {
     while true; do
         show_header
+        log_message INFO "Displaying main menu."
         echo -e "${CYAN}Available Options:${NC}"
         echo -e "${GREEN}1. Apply Intelligent Optimizations${NC}"
         echo -e "${GREEN}2. Find Best MTU for Server${NC}"
@@ -306,7 +292,6 @@ function show_menu() {
         echo -e "${GREEN}0. Exit${NC}"
         echo
         read -rp "Enter your choice (0-4): " choice
-        
         case $choice in
             1) intelligent_settings ;;
             2) 
@@ -316,27 +301,27 @@ function show_menu() {
             3) restore_original ;;
             4) system_update ;;
             0) 
+                log_message INFO "Exiting script."
                 echo -e "\n${YELLOW}Exiting...${NC}"
                 exit 0
                 ;;
-            *)
+            *) 
+                log_message WARN "Invalid option selected."
                 echo -e "\n${RED}Invalid option. Please enter a number between 0 and 4.${NC}"
                 sleep 2
                 ;;
         esac
-        
         read -n 1 -s -r -p "Press any key to continue..."
         echo
     done
 }
 
 # Handle script interruption
-trap 'echo -e "\n${RED}Script interrupted. Cleaning up...${NC}"; exit 1' INT TERM
+trap 'log_message WARN "Script interrupted. Cleaning up..."; exit 1' INT TERM
 
 # Main execution
 if ! install_dependencies; then
-    echo -e "${RED}Failed to install required dependencies. Exiting.${NC}"
+    log_message ERROR "Failed to install required dependencies. Exiting."
     exit 1
 fi
-
 show_menu
