@@ -245,12 +245,12 @@ function show_menu() {
         echo
         read -p "Enter your choice: " choice
         case $choice in
-        1) intelligent_settings ;;
-        2) find_best_mtu ;;
-        3) restore_original ;;
-        0) echo -e "\n${YELLOW}Exiting...${NC}" ; exit 0 ;;
-        *) echo -e "\n${RED}Invalid option. Please try again.${NC}\n" ; sleep 2 ;;
-        esac
+    1) intelligent_settings ;;
+    2) find_best_mtu ;;
+    3) restore_original ;;
+    0) echo -e "\n${YELLOW}Exiting...${NC}" ; exit 0 ;;
+    *) echo -e "\n${RED}Invalid option. Please try again.${NC}\n" ; sleep 2 ;;
+esac
     done
 }
 
