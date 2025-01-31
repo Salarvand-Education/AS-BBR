@@ -4,6 +4,15 @@ AS-BBR is a powerful and user-friendly script designed to optimize your server's
 
 ---
 
+## **Quick Installation**
+
+To quickly install and run the script, use the following command:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Salarvand-Education/AS-BBR/main/AS-BBR.sh)"
+```
+---
+
 ## **Features**
 - **Automatic Dependency Installation:** Ensures all required packages (`sudo`, `curl`, `jq`) are installed.
 - **Intelligent Network Optimizations:** Dynamically adjusts buffer sizes (`rmem_max`, `wmem_max`), backlog settings, and TCP parameters based on system resources (CPU cores and RAM).
@@ -12,13 +21,3 @@ AS-BBR is a powerful and user-friendly script designed to optimize your server's
 - **Full System Update:** Updates and upgrades all installed packages for better stability.
 - **Restore Original Settings:** Easily revert all changes made by the script.
 - **User-Friendly Menu:** Provides an interactive menu for easy navigation and execution of tasks.
-
----
-
-## **Quick Installation**
-
-To quickly install and run the script, use the following command:
-
-```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Salarvand-Education/AS-BBR/main/AS-BBR.sh)"
-```
