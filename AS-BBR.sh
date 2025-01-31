@@ -16,7 +16,6 @@ fi
 
 # Function to display the logo and system information
 function show_header() {
-    print_logo
     echo -e "\n${BLUE}==========================================${NC}"
     echo -e "${CYAN}   Network Optimizer Script V1.0${NC}"
     echo -e "${BLUE}==========================================${NC}"
