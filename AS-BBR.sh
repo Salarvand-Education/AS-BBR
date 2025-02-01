@@ -38,6 +38,19 @@ function log_message() {
     esac
 }
 
+# Function to check internet connectivity
+function check_internet_connection() {
+    local test_ip="9.9.9.9" # Quad9 DNS (can be replaced with Google DNS: 8.8.8.8)
+    log_message INFO "Checking internet connection..."
+    if ping -c 1 "$test_ip" &>/dev/null; then
+        log_message SUCCESS "Internet connection is active."
+        return 0
+    else
+        log_message ERROR "No internet connection detected."
+        return 1
+    fi
+}
+
 # Function to display the logo and system information
 function show_header() {
     clear
@@ -54,6 +67,10 @@ function show_header() {
 # Function to install required dependencies
 function install_dependencies() {
     log_message INFO "Checking and installing required dependencies..."
+    if ! check_internet_connection; then
+        log_message ERROR "No internet connection available. Cannot install dependencies."
+        exit 1
+    fi
     if ! apt-get update &> /dev/null; then
         log_message ERROR "Failed to update package lists. Check your internet connection."
         exit 1
@@ -209,7 +226,7 @@ EOF
 # Function to find best MTU
 function find_best_mtu() {
     local interface=$1
-    local target_ip="9.9.9.9" # Updated to Quad9 DNS
+    local target_ip="9.9.9.9" # Quad9 DNS
     local current_mtu=$(ip link show "$interface" | grep -oP 'mtu \K\d+')
     local optimal_mtu=$current_mtu
     log_message INFO "Finding optimal MTU for interface $interface..."
@@ -234,6 +251,10 @@ function find_best_mtu() {
 # Function to perform system update
 function system_update() {
     log_message INFO "Performing system update..."
+    if ! check_internet_connection; then
+        log_message ERROR "No internet connection available. Cannot update system."
+        return 1
+    fi
     if ! apt-get update &>/dev/null; then
         log_message ERROR "Failed to update package lists."
         return 1
@@ -276,6 +297,10 @@ function restore_original() {
 # Function to apply intelligent settings
 function intelligent_settings() {
     log_message INFO "Applying intelligent network optimizations..."
+    if ! check_internet_connection; then
+        log_message ERROR "No internet connection available. Cannot apply optimizations."
+        return 1
+    fi
     # Get primary network interface
     local interface=$(ip route | grep default | awk '{print $5}' | head -n1)
     if [[ -z "$interface" ]]; then
