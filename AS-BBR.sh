@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Network Optimizer Script v4.9 (SSH Session Fix)
+# Network Optimizer Script v4.9
 # Author: Amirsam Salarvand
 # Last Updated: 2025-06-08
-# Description: Advanced network optimization - SSH Session Issue Fixed
+# Description: Advanced network optimization
 
 # Force clean environment
 export LC_ALL=C
