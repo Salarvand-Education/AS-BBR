@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Network Optimizer Script v4.8
+# Network Optimizer Script v4.9 (SSH Session Fix)
 # Author: Amirsam Salarvand
 # Last Updated: 2025-06-08
-# Description: Advanced network optimization for Linux servers
+# Description: Advanced network optimization - SSH Session Issue Fixed
 
 # Force clean environment
 export LC_ALL=C
@@ -154,7 +154,120 @@ wait_for_dpkg_lock() {
     return 0
 }
 
-# COMPLETELY FIXED dependency installation with better package manager detection
+# NEW: Reset environment after package installation - BEST SOLUTION
+reset_environment() {
+    log_message INFO "Resetting environment after package installation..."
+    
+    # Clear package manager state
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get clean 2>/dev/null || true
+        rm -f /var/lib/dpkg/lock* /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
+    fi
+    
+    # Reset terminal state
+    reset 2>/dev/null || true
+    stty sane 2>/dev/null || true
+    
+    # Clear environment cache
+    hash -r 2>/dev/null || true
+    
+    # Source environment files
+    [[ -f /etc/environment ]] && source /etc/environment 2>/dev/null || true
+    [[ -f ~/.bashrc ]] && source ~/.bashrc 2>/dev/null || true
+    
+    # Update PATH to ensure new packages are found
+    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    
+    # Clear any hanging processes
+    local hanging_procs
+    hanging_procs=$(ps aux | grep -E "(apt|dpkg|unattended)" | grep -v grep | awk '{print $2}' 2>/dev/null || true)
+    if [[ -n "$hanging_procs" ]]; then
+        echo "$hanging_procs" | xargs -r kill -9 2>/dev/null || true
+    fi
+    
+    # Wait for system to settle
+    sleep 3
+    
+    log_message SUCCESS "Environment reset completed."
+    
+    # Test if environment is working properly
+    if ! test_environment_health; then
+        suggest_reconnection
+        return 1
+    fi
+    
+    return 0
+}
+
+# NEW: Test environment health after package installation
+test_environment_health() {
+    log_message INFO "Testing environment health..."
+    
+    # Test basic commands
+    local test_commands=("ping" "dig" "ethtool" "ip" "sysctl")
+    local failed_commands=()
+    
+    for cmd in "${test_commands[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            failed_commands+=("$cmd")
+        fi
+    done
+    
+    # Test terminal responsiveness
+    if ! echo "test" >/dev/null 2>&1; then
+        log_message WARN "Terminal output test failed"
+        return 1
+    fi
+    
+    # Test if we can create temporary files
+    if ! touch "/tmp/netopt_test_$$" 2>/dev/null; then
+        log_message WARN "File system access test failed"
+        return 1
+    fi
+    rm -f "/tmp/netopt_test_$$" 2>/dev/null
+    
+    # If any commands failed, environment is unhealthy
+    if [[ "${#failed_commands[@]}" -gt 0 ]]; then
+        log_message WARN "Some commands not found: ${failed_commands[*]}"
+        return 1
+    fi
+    
+    log_message SUCCESS "Environment health check passed."
+    return 0
+}
+
+# NEW: Suggest SSH reconnection if environment issues persist
+suggest_reconnection() {
+    printf "\n%s╔════════════════════════════════════════════════════════╗%s\n" "$RED" "$NC"
+    printf "%s║                    ATTENTION REQUIRED                 ║%s\n" "$RED" "$NC"
+    printf "%s╚════════════════════════════════════════════════════════╝%s\n\n" "$RED" "$NC"
+    
+    log_message WARN "Environment issues detected after package installation."
+    printf "%sFor optimal performance, please:%s\n\n" "$YELLOW" "$NC"
+    printf "%s1. %sPress Ctrl+C to exit this script%s\n" "$CYAN" "$WHITE" "$NC"
+    printf "%s2. %sReconnect your SSH session%s\n" "$CYAN" "$WHITE" "$NC"
+    printf "%s3. %sRun the script again%s\n\n" "$CYAN" "$WHITE" "$NC"
+    
+    printf "%sThis ensures all environment changes take effect properly.%s\n\n" "$YELLOW" "$NC"
+    
+    local countdown=30
+    while [[ $countdown -gt 0 ]]; do
+        printf "\r%sContinuing anyway in %d seconds (Press Ctrl+C to exit)...%s" "$YELLOW" "$countdown" "$NC"
+        sleep 1
+        ((countdown--))
+    done
+    printf "\n\n"
+    
+    read -rp "Continue with potential issues? (y/N): " choice
+    if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+        log_message INFO "Script paused for SSH reconnection. Please run again after reconnecting."
+        exit 0
+    fi
+    
+    log_message WARN "Continuing despite environment issues..."
+}
+
+# IMPROVED dependency installation with environment reset
 install_dependencies() {
     log_message INFO "Checking and installing required dependencies..."
     
@@ -251,6 +364,12 @@ install_dependencies() {
         
         if timeout 600 $install_cmd $install_options "${missing_deps[@]}" 2>/dev/null; then
             log_message SUCCESS "Dependencies installed successfully."
+            
+            # CRITICAL: Reset environment after package installation
+            if ! reset_environment; then
+                return 1
+            fi
+            
         else
             local exit_code=$?
             if [[ "$exit_code" -eq 124 ]]; then
@@ -258,6 +377,7 @@ install_dependencies() {
             else
                 log_message WARN "Some packages failed to install, continuing..."
             fi
+            return 1
         fi
     else
         log_message INFO "All dependencies are already installed."
@@ -308,7 +428,7 @@ show_header() {
     uptime=$(uptime -p 2>/dev/null || echo "Unknown")
     
     printf "\n%s===========================================%s\n" "$BLUE" "$NC"
-    printf "%s   Network Optimizer Script v4.8%s\n" "$CYAN" "$NC"
+    printf "%s   Network Optimizer Script v4.9%s\n" "$CYAN" "$NC"
     printf "%s   Author: Amirsam Salarvand%s\n" "$CYAN" "$NC"
     printf "%s===========================================%s\n" "$BLUE" "$NC"
     printf "%sHostname: %s%s\n" "$GREEN" "$hostname" "$NC"
@@ -370,7 +490,7 @@ fix_etc_hosts() {
     return 0
 }
 
-# Function to fix DNS configuration - IMPROVED to use default DNS
+# Function to fix DNS configuration
 fix_dns() {
     local dns_file="/etc/resolv.conf"
     log_message INFO "Starting to update DNS configuration..."
@@ -398,11 +518,9 @@ fix_dns() {
     local current_time
     printf -v current_time '%(%Y-%m-%d %H:%M:%S)T' -1
     
-    # Use default TARGET_DNS values (readonly is preserved)
     local dns1="${TARGET_DNS[0]}"
     local dns2="${TARGET_DNS[1]}"
     
-    # Update nameservers
     if cat > "$dns_file" << EOF
 # Generated by network optimizer on $current_time
 nameserver $dns1
@@ -412,7 +530,6 @@ EOF
     then
         log_message SUCCESS "DNS configuration updated successfully."
         
-        # Verify DNS is working
         if dig +short +timeout=2 google.com @"$dns1" >/dev/null 2>&1; then
             log_message SUCCESS "DNS resolution verified."
         else
@@ -427,14 +544,13 @@ EOF
     return 0
 }
 
-# NEW: Custom DNS configuration function - FIXED readonly issue
+# Custom DNS configuration function
 custom_dns_config() {
     log_message INFO "Starting custom DNS configuration..."
     
     read -rp "Enter primary DNS server IP: " dns1
     read -rp "Enter secondary DNS server IP: " dns2
     
-    # Validate DNS IPs
     if ! [[ "$dns1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
         log_message ERROR "Invalid primary DNS IP format"
         return 1
@@ -446,12 +562,10 @@ custom_dns_config() {
     fi
     
     log_message INFO "Applying custom DNS: $dns1, $dns2"
-    
-    # Use custom DNS configuration function
     custom_fix_dns "$dns1" "$dns2"
 }
 
-# NEW: Custom DNS fix function with custom DNS servers
+# Custom DNS fix function
 custom_fix_dns() {
     local custom_dns1="$1"
     local custom_dns2="$2"
@@ -459,14 +573,12 @@ custom_fix_dns() {
     
     log_message INFO "Updating DNS configuration with custom servers..."
     
-    # Create backup
     local backup_path
     if ! backup_path=$(create_backup "$dns_file"); then
         log_message ERROR "Failed to create backup of DNS configuration."
         return 1
     fi
     
-    # Check if file is immutable
     if lsattr "$dns_file" 2>/dev/null | grep -q 'i'; then
         log_message WARN "File $dns_file is immutable. Making it mutable..."
         if ! chattr -i "$dns_file" 2>/dev/null; then
@@ -483,7 +595,6 @@ custom_fix_dns() {
     local current_time
     printf -v current_time '%(%Y-%m-%d %H:%M:%S)T' -1
     
-    # Update nameservers with custom DNS
     if cat > "$dns_file" << EOF
 # Generated by network optimizer on $current_time
 # Custom DNS configuration
@@ -496,7 +607,6 @@ EOF
         log_message INFO "Primary DNS: $custom_dns1"
         log_message INFO "Secondary DNS: $custom_dns2"
         
-        # Verify DNS is working
         if dig +short +timeout=2 google.com @"$custom_dns1" >/dev/null 2>&1; then
             log_message SUCCESS "Custom DNS resolution verified."
         else
@@ -511,28 +621,23 @@ EOF
     return 0
 }
 
-# COMPLETELY FIXED system info gathering - NO MORE SYNTAX ERRORS
+# System info gathering - FIXED
 gather_system_info() {
     log_message INFO "Gathering system information..."
     
-    # CPU cores with COMPLETE cleaning and validation
     local cpu_cores total_ram
     
-    # Get CPU cores and clean completely
     cpu_cores=$(nproc 2>/dev/null | head -1)
     cpu_cores=$(printf '%s' "$cpu_cores" | tr -cd '0-9')
     
-    # Validate CPU cores
     if [[ -z "$cpu_cores" ]] || ! [[ "$cpu_cores" =~ ^[0-9]+$ ]] || [[ "$cpu_cores" -eq 0 ]]; then
         log_message WARN "CPU detection failed. Using fallback value."
         cpu_cores=1
     fi
     
-    # Get RAM and clean completely
     total_ram=$(awk '/MemTotal:/ {print int($2/1024); exit}' /proc/meminfo 2>/dev/null | head -1)
     total_ram=$(printf '%s' "$total_ram" | tr -cd '0-9')
     
-    # Validate RAM
     if [[ -z "$total_ram" ]] || ! [[ "$total_ram" =~ ^[0-9]+$ ]] || [[ "$total_ram" -eq 0 ]]; then
         log_message WARN "RAM detection failed. Using fallback value."
         total_ram=1024
@@ -542,12 +647,10 @@ gather_system_info() {
     log_message INFO "CPU cores: $cpu_cores"
     log_message INFO "Total RAM: ${total_ram}MB"
     
-    # Calculate optimal values
     local optimal_backlog optimal_mem
     optimal_backlog=$((50000 * cpu_cores))
     optimal_mem=$((total_ram * 1024 / 4))
     
-    # Set global variables
     SYSTEM_CPU_CORES=$cpu_cores
     SYSTEM_TOTAL_RAM=$total_ram
     SYSTEM_OPTIMAL_BACKLOG=$optimal_backlog
@@ -556,7 +659,7 @@ gather_system_info() {
     return 0
 }
 
-# Function to optimize network settings
+# Network optimization function
 optimize_network() {
     local interface="$1"
     
@@ -567,35 +670,29 @@ optimize_network() {
     
     log_message INFO "Optimizing network interface $interface..."
     
-    # Gather system info first if not already done
     if [[ -z "$SYSTEM_OPTIMAL_BACKLOG" ]]; then
         gather_system_info
     fi
     
-    # Calculate optimal buffer sizes
     local max_mem=$SYSTEM_OPTIMAL_MEM
     if [[ "$max_mem" -gt 16777216 ]]; then
-        max_mem=16777216 # Cap at 16MB
+        max_mem=16777216
     fi
     
-    # Configure NIC offload settings
     log_message INFO "Configuring NIC offload settings..."
     {
         ethtool -K "$interface" tso on gso on gro on 2>/dev/null
         ethtool -G "$interface" rx 4096 tx 4096 2>/dev/null
     } || true
     
-    # Apply UDP GRO forwarding if available
     if ethtool -k "$interface" 2>/dev/null | grep -q "rx-udp-gro-forwarding"; then
         log_message INFO "Enabling UDP GRO forwarding..."
         ethtool -K "$interface" rx-udp-gro-forwarding on rx-gro-list off 2>/dev/null || true
     fi
     
-    # Set up TCP optimizations
     local sysctl_conf="/etc/sysctl.d/99-network-optimizer.conf"
     log_message INFO "Creating network optimization configuration..."
     
-    # Create backup if file exists
     if [[ -f "$sysctl_conf" ]]; then
         create_backup "$sysctl_conf"
     fi
@@ -603,7 +700,6 @@ optimize_network() {
     local current_time
     printf -v current_time '%(%Y-%m-%d %H:%M:%S)T' -1
     
-    # Create optimized sysctl configuration
     cat > "$sysctl_conf" << EOF
 # Network optimizations added on $current_time
 # Core settings
@@ -639,7 +735,6 @@ net.ipv4.conf.default.rp_filter = 1
 net.ipv4.tcp_syncookies = 1
 EOF
     
-    # Apply settings
     if sysctl -p "$sysctl_conf" &>/dev/null; then
         log_message SUCCESS "Network optimizations applied successfully."
     else
@@ -647,7 +742,6 @@ EOF
         return 1
     fi
     
-    # Check if BBR is available and enabled
     local current_cc
     current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
     if [[ "$current_cc" == "bbr" ]]; then
@@ -657,7 +751,6 @@ EOF
         sysctl -w net.ipv4.tcp_congestion_control=cubic &>/dev/null
     fi
     
-    # Set queue length
     if ip link set dev "$interface" txqueuelen 10000 2>/dev/null; then
         log_message SUCCESS "Increased TX queue length for $interface."
     else
@@ -667,10 +760,10 @@ EOF
     return 0
 }
 
-# Function to find best MTU - Completely Rewritten with Better Algorithm
+# MTU optimization function
 find_best_mtu() {
     local interface="$1"
-    local target_ip="8.8.8.8" # Google DNS for better reliability
+    local target_ip="8.8.8.8"
     
     if [[ -z "$interface" ]]; then
         log_message ERROR "No interface specified for MTU optimization."
@@ -679,7 +772,6 @@ find_best_mtu() {
     
     log_message INFO "Starting MTU optimization for interface $interface..."
     
-    # Get current MTU more reliably
     local current_mtu
     if ! current_mtu=$(cat "/sys/class/net/$interface/mtu" 2>/dev/null); then
         current_mtu=$(ip link show "$interface" 2>/dev/null | sed -n 's/.*mtu \([0-9]*\).*/\1/p')
@@ -692,30 +784,25 @@ find_best_mtu() {
     
     log_message INFO "Current MTU: $current_mtu"
     
-    # Check if interface is up and has an IP
     if ! ip addr show "$interface" 2>/dev/null | grep -q "inet "; then
         log_message ERROR "Interface $interface is not configured with an IP address"
         return 1
     fi
     
-    # Test basic connectivity first
     log_message INFO "Testing basic connectivity..."
     if ! ping -c 1 -W 3 "$target_ip" &>/dev/null; then
         log_message ERROR "No internet connectivity. Cannot perform MTU optimization."
         return 1
     fi
     
-    # Function to test MTU size with better error handling
     test_mtu_size() {
         local size="$1"
-        local payload_size=$((size - 28)) # IP header (20) + ICMP header (8)
+        local payload_size=$((size - 28))
         
-        # Additional validation
         if [[ "$payload_size" -lt 0 ]]; then
             return 1
         fi
         
-        # Test with multiple attempts for reliability
         local attempts=0
         local success=0
         
@@ -734,7 +821,6 @@ find_best_mtu() {
     local optimal_mtu="$current_mtu"
     local found_working=0
     
-    # Test common MTU sizes first (ordered by likelihood)
     log_message INFO "Testing common MTU sizes..."
     local common_mtus=(1500 1492 1480 1472 1468 1460 1450 1440 1430 1420 1400 1380 1360 1340 1300 1280 1200 1024)
     
@@ -752,7 +838,6 @@ find_best_mtu() {
         fi
     done
     
-    # If no common MTU worked, try binary search for optimal value
     if [[ "$found_working" -eq 0 ]]; then
         log_message INFO "Common MTUs failed. Performing binary search..."
         local min_mtu=576
@@ -775,14 +860,12 @@ find_best_mtu() {
         done
     fi
     
-    # Apply the new MTU if different and working size found
     if [[ "$found_working" -eq 1 ]]; then
         if [[ "$optimal_mtu" -ne "$current_mtu" ]]; then
             log_message INFO "Applying optimal MTU: $optimal_mtu"
             if ip link set "$interface" mtu "$optimal_mtu" 2>/dev/null; then
                 log_message SUCCESS "MTU successfully set to $optimal_mtu"
                 
-                # Verify the change
                 local new_mtu
                 new_mtu=$(cat "/sys/class/net/$interface/mtu" 2>/dev/null)
                 if [[ "$new_mtu" = "$optimal_mtu" ]]; then
@@ -804,24 +887,21 @@ find_best_mtu() {
     return 0
 }
 
-# Function to restore original settings - Fixed comparison operators
+# Restore defaults function
 restore_defaults() {
     log_message INFO "Restoring original settings..."
     
-    # Ask for confirmation
     read -rp "Are you sure you want to restore default settings? (y/N): " choice
     if [[ ! "$choice" =~ ^[Yy]$ ]]; then
         log_message INFO "Restoration cancelled."
         return 0
     fi
     
-    # Find the latest backups more efficiently
     local sysctl_backup hosts_backup resolv_backup
     sysctl_backup=$(find "$BACKUP_DIR" -name "99-network-optimizer.conf.bak*" -type f 2>/dev/null | sort -V | tail -n1)
     hosts_backup=$(find "$BACKUP_DIR" -name "hosts.bak*" -type f 2>/dev/null | sort -V | tail -n1)
     resolv_backup=$(find "$BACKUP_DIR" -name "resolv.conf.bak*" -type f 2>/dev/null | sort -V | tail -n1)
     
-    # Restore sysctl settings if backup exists
     if [[ -f "$sysctl_backup" ]]; then
         if cp -f "$sysctl_backup" "/etc/sysctl.d/99-network-optimizer.conf" 2>/dev/null; then
             sysctl -p "/etc/sysctl.d/99-network-optimizer.conf" &>/dev/null
@@ -835,7 +915,6 @@ restore_defaults() {
         log_message INFO "Reset to system defaults"
     fi
     
-    # Restore hosts file if backup exists
     if [[ -f "$hosts_backup" ]]; then
         if cp -f "$hosts_backup" "/etc/hosts" 2>/dev/null; then
             log_message SUCCESS "Restored hosts file"
@@ -846,7 +925,6 @@ restore_defaults() {
         log_message WARN "No hosts backup found"
     fi
     
-    # Restore DNS settings if backup exists
     if [[ -f "$resolv_backup" ]]; then
         if cp -f "$resolv_backup" "/etc/resolv.conf" 2>/dev/null; then
             log_message SUCCESS "Restored DNS settings"
@@ -868,7 +946,7 @@ restore_defaults() {
     return 0
 }
 
-# Function to run network diagnostics - Improved with cleaner output
+# Network diagnostics function
 run_diagnostics() {
     local interface="${PRIMARY_INTERFACE:-$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}')}"
     
@@ -884,10 +962,8 @@ run_diagnostics() {
     if [[ -n "$interface" ]]; then
         printf "%s│%s Interface: %s%s%s\n" "$YELLOW" "$NC" "$GREEN" "$interface" "$NC"
         
-        # Get interface details more cleanly
         local ip_info speed duplex link_status mtu
         
-        # Get IP information
         ip_info=$(ip -4 addr show "$interface" 2>/dev/null | grep "inet " | awk '{print $2}' | head -1)
         if [[ -n "$ip_info" ]]; then
             printf "%s│%s IPv4 Address: %s%s%s\n" "$YELLOW" "$NC" "$GREEN" "$ip_info" "$NC"
@@ -895,11 +971,9 @@ run_diagnostics() {
             printf "%s│%s IPv4 Address: %sNot configured%s\n" "$YELLOW" "$NC" "$RED" "$NC"
         fi
         
-        # Get MTU
         mtu=$(cat "/sys/class/net/$interface/mtu" 2>/dev/null || echo "Unknown")
         printf "%s│%s MTU: %s%s%s\n" "$YELLOW" "$NC" "$GREEN" "$mtu" "$NC"
         
-        # Get ethtool information if available
         if command -v ethtool &>/dev/null; then
             local ethtool_output
             ethtool_output=$(ethtool "$interface" 2>/dev/null)
@@ -909,7 +983,6 @@ run_diagnostics() {
                 duplex=$(echo "$ethtool_output" | grep "Duplex:" | awk '{print $2}' | head -1)
                 link_status=$(echo "$ethtool_output" | grep "Link detected:" | awk '{print $3}' | head -1)
                 
-                # Clean up and display
                 [[ "$speed" = "Unknown!" ]] && speed="Unknown"
                 [[ "$duplex" = "Unknown!" ]] && duplex="Unknown"
                 
@@ -919,14 +992,12 @@ run_diagnostics() {
             fi
         fi
         
-        # Get traffic statistics
         local rx_bytes tx_bytes
         if [[ -f "/sys/class/net/$interface/statistics/rx_bytes" ]]; then
             rx_bytes=$(cat "/sys/class/net/$interface/statistics/rx_bytes" 2>/dev/null)
             tx_bytes=$(cat "/sys/class/net/$interface/statistics/tx_bytes" 2>/dev/null)
             
             if [[ -n "$rx_bytes" ]] && [[ -n "$tx_bytes" ]]; then
-                # Convert to human readable
                 rx_human=$(numfmt --to=iec --suffix=B "$rx_bytes" 2>/dev/null || echo "$rx_bytes bytes")
                 tx_human=$(numfmt --to=iec --suffix=B "$tx_bytes" 2>/dev/null || echo "$tx_bytes bytes")
                 
@@ -955,7 +1026,6 @@ run_diagnostics() {
                 dig_output=$(dig +short +time=2 +tries=1 google.com @"$dns" 2>/dev/null)
                 if [[ -n "$dig_output" ]] && [[ "$dig_output" != *"connection timed out"* ]]; then
                     result="OK"
-                    # Get query time if possible
                     local query_time
                     query_time=$(dig +noall +stats google.com @"$dns" 2>/dev/null | grep "Query time:" | awk '{print $4}')
                     if [[ -n "$query_time" ]]; then
@@ -968,18 +1038,15 @@ run_diagnostics() {
                 fi
             fi
             
-            # Save result to temporary file with PID
             echo "$dns|$result|$time_taken" > "/tmp/dns_test_$$_$dns"
         } &
         dns_pids+=($!)
     done
     
-    # Wait for all DNS tests and collect results
     for pid in "${dns_pids[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
     
-    # Display DNS results
     for dns in "${TARGET_DNS[@]}"; do
         if [[ -f "/tmp/dns_test_$$_$dns" ]]; then
             local dns_result
@@ -1028,7 +1095,6 @@ run_diagnostics() {
         conn_pids+=($!)
     done
     
-    # Wait and display connectivity results
     for pid in "${conn_pids[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
@@ -1059,7 +1125,6 @@ run_diagnostics() {
     printf "%s┌─ [4] Network Configuration%s\n" "$YELLOW" "$NC"
     printf "%s│%s\n" "$YELLOW" "$NC"
     
-    # TCP Congestion Control
     local current_cc available_cc
     current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "Unknown")
     available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "Unknown")
@@ -1067,7 +1132,6 @@ run_diagnostics() {
     printf "%s│%s TCP Congestion Control: %s%s%s\n" "$YELLOW" "$NC" "$GREEN" "$current_cc" "$NC"
     printf "%s│%s Available Algorithms: %s%s%s\n" "$YELLOW" "$NC" "$CYAN" "$available_cc" "$NC"
     
-    # Default route
     local default_route gateway
     default_route=$(ip route show default 2>/dev/null | head -1)
     if [[ -n "$default_route" ]]; then
@@ -1097,69 +1161,59 @@ run_diagnostics() {
     
     printf "%s└─%s\n\n" "$YELLOW" "$NC"
     
-    # Fixed: Single "Press any key" prompt instead of double
     printf "%s%s" "$CYAN" "Press any key to continue..."
     read -n 1 -s -r
     printf "%s\n" "$NC"
 }
 
-# Function to intelligently apply all optimizations - REMOVED system update
+# Intelligent optimization function - UPDATED
 intelligent_optimize() {
     log_message INFO "Starting intelligent network optimization..."
     
-    # Check if running as root
     if [[ "$EUID" -ne 0 ]]; then
         log_message ERROR "This script must be run as root."
         return 1
     fi
     
-    # Check for internet connectivity
     if ! check_internet_connection; then
         log_message ERROR "No internet connection available. Cannot apply optimizations."
         return 1
     fi
     
-    # Use cached interface if available
     local interface="${PRIMARY_INTERFACE}"
     if [[ -z "$interface" ]]; then
         log_message ERROR "Could not detect primary network interface."
         return 1
     fi
     
-    # Install dependencies
+    # Install dependencies with environment reset
     if ! install_dependencies; then
         log_message ERROR "Failed to install required dependencies."
         return 1
     fi
     
-    # Apply optimizations in sequence
     log_message INFO "Applying optimizations to interface $interface..."
     
-    # Fix host file
     if ! fix_etc_hosts; then
         log_message ERROR "Failed to optimize hosts file."
         return 1
     fi
     
-    # Fix DNS settings
     if ! fix_dns; then
         log_message ERROR "Failed to optimize DNS settings."
         return 1
     fi
     
-    # Gather system information
     if ! gather_system_info; then
         log_message ERROR "Failed to gather system information."
         return 1
     fi
     
-    # Apply network optimizations
     if ! optimize_network "$interface"; then
         log_message ERROR "Failed to apply network optimizations."
         return 1
     fi
     
-    # Find best MTU
     if ! find_best_mtu "$interface"; then
         log_message ERROR "Failed to optimize MTU."
         return 1
@@ -1176,7 +1230,7 @@ intelligent_optimize() {
     return 0
 }
 
-# Advanced menu - FIXED readonly TARGET_DNS issue
+# Advanced menu
 show_advanced_menu() {
     while true; do
         show_header
@@ -1196,7 +1250,6 @@ show_advanced_menu() {
                 find_best_mtu "$PRIMARY_INTERFACE"
                 ;;
             2) 
-                # FIXED: Use custom DNS function instead of modifying readonly variable
                 custom_dns_config
                 ;;
             3)
@@ -1231,7 +1284,6 @@ show_advanced_menu() {
                 ;;
         esac
         
-        # Only show "Press any key" for non-return operations
         if [[ "$choice" != "0" ]]; then
             printf "\n%sPress any key to continue...%s" "$CYAN" "$NC"
             read -n 1 -s -r
@@ -1240,7 +1292,7 @@ show_advanced_menu() {
     done
 }
 
-# Main menu - REMOVED system update option, renumbered menu items
+# Main menu
 show_menu() {
     while true; do
         show_header
@@ -1257,18 +1309,15 @@ show_menu() {
         case "$choice" in
             1) 
                 intelligent_optimize
-                # Show "Press any key" only for completed operations
                 printf "\n%sPress any key to continue...%s" "$CYAN" "$NC"
                 read -n 1 -s -r
                 printf "\n"
                 ;;
             2) 
                 run_diagnostics
-                # No need for additional "Press any key" as run_diagnostics handles it
                 ;;
             3) 
                 show_advanced_menu
-                # No additional prompt needed when returning from advanced menu
                 ;;
             4) 
                 restore_defaults
@@ -1292,18 +1341,13 @@ show_menu() {
 
 # Main execution
 main() {
-    # Check if running as root
     if [[ "$EUID" -ne 0 ]]; then
         printf "%sPlease run this script as root.%s\n" "$RED" "$NC"
         exit 1
     fi
 
-    # Initialize environment
     init_environment
-
-    # Start the menu
     show_menu
 }
 
-# Call main function
 main "$@"
